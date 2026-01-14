@@ -207,17 +207,14 @@ public class MaximTestBot extends TelegramLongPollingBot {
 
             sendPdfForResult(chatId, r);
 
-            // спустя 10 секунд — апселл (если не спамить)
-            if (userRepo.shouldSendUpsell(chatId, 6 * 60 * 60 * 1000L)) { // раз в 6 часов
-                userRepo.markUpsellSentNow(chatId);
-                scheduler.schedule(() -> {
-                    try {
-                        sendUpsell(chatId);
-                    } catch (Exception e) {
-                        log.warn("upsell send failed: {}", e.toString());
-                    }
-                }, 10, java.util.concurrent.TimeUnit.SECONDS);
-            }
+            userRepo.markUpsellSentNow(chatId);
+            scheduler.schedule(() -> {
+                try {
+                    sendUpsell(chatId);
+                } catch (Exception e) {
+                    log.warn("upsell send failed: {}", e.toString());
+                }
+            }, 10, java.util.concurrent.TimeUnit.SECONDS);
 
             answerCb(cq, "Отправляю файл 📎");
             return;
