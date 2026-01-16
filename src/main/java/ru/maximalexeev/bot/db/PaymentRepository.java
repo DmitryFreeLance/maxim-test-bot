@@ -64,6 +64,17 @@ public class PaymentRepository {
         }
     }
 
+    public void updateReceiptContact(String paymentId, String receiptContact) throws Exception {
+        long now = System.currentTimeMillis();
+        try (Connection c = db.getConnection();
+             PreparedStatement ps = c.prepareStatement("UPDATE payments SET receipt_contact=?, updated_at=? WHERE payment_id=?")) {
+            ps.setString(1, receiptContact);
+            ps.setLong(2, now);
+            ps.setString(3, paymentId);
+            ps.executeUpdate();
+        }
+    }
+
     public void markDelivered(String paymentId) throws Exception {
         long now = System.currentTimeMillis();
         try (Connection c = db.getConnection();

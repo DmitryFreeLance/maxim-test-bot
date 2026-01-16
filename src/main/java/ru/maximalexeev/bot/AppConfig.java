@@ -3,6 +3,7 @@ package ru.maximalexeev.bot;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -17,19 +18,16 @@ public record AppConfig(
         String pdfRisk,
         String pdfNeighbors,
         String pdfAllies,
-        String audioMp4,
 
-        // payments YooKassa
-        String yooShopId,
-        String yooSecretKey,
-        String yooReturnUrl,
+        // audio bundle (5 files)
+        List<String> audioFiles,
+
+        // Telegram Payments (YooKassa provider via BotFather)
+        String yooProviderToken,
         BigDecimal audioPriceRub,
 
-        // receipt params
-        int receiptVatCode,
-        String receiptPaymentMode,
-        String receiptPaymentSubject,
-        Integer receiptTimezone
+        // deep links
+        String startParamAudio
 ) {
     public static AppConfig fromEnv() {
         String token = require("BOT_TOKEN");
@@ -48,27 +46,31 @@ public record AppConfig(
         String pdfRisk = env("PDF_RISK", "risk.pdf");
         String pdfNeighbors = env("PDF_NEIGHBORS", "neighbors.pdf");
         String pdfAllies = env("PDF_ALLIES", "allies.pdf");
-        String audioMp4 = env("AUDIO_MP4", "1.mp4");
 
-        String shopId = env("YOOKASSA_SHOP_ID", "");
-        String secret = env("YOOKASSA_SECRET_KEY", "");
-        String returnUrl = env("YOOKASSA_RETURN_URL", "https://t.me/" + username);
+        // Можно переопределять одной переменной:
+        // AUDIO_FILES="Стоп-кран.m4a,Система.m4a,Секс и быт.m4a,Пещера.m4a,Инструкция.m4a"
+        String audioFilesRaw = env("AUDIO_FILES",
+                "Стоп-кран.m4a,Система.m4a,Секс и быт.m4a,Пещера.m4a,Инструкция.m4a");
+        List<String> audioFiles = Arrays.stream(audioFilesRaw.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .collect(Collectors.toList());
 
         BigDecimal price = new BigDecimal(env("AUDIO_PRICE_RUB", "490.00"));
 
-        int vatCode = Integer.parseInt(env("RECEIPT_VAT_CODE", "1"));
-        String paymentMode = env("RECEIPT_PAYMENT_MODE", "full_payment");
-        String paymentSubject = env("RECEIPT_PAYMENT_SUBJECT", "service");
-        Integer tz = null;
-        String tzRaw = env("RECEIPT_TIMEZONE", "2");
-        if (!tzRaw.isBlank()) tz = Integer.parseInt(tzRaw);
+        // Provider token from BotFather -> Payments -> YooKassa
+        String providerToken = env("YOOKASSA_PROVIDER_TOKEN", "");
+
+        // deep-link start param for audio offer
+        String startParamAudio = env("START_PARAM_AUDIO", "2");
 
         return new AppConfig(
                 token, username, admins,
                 dbPath, mediaDir,
-                pdfRisk, pdfNeighbors, pdfAllies, audioMp4,
-                shopId, secret, returnUrl, price,
-                vatCode, paymentMode, paymentSubject, tz
+                pdfRisk, pdfNeighbors, pdfAllies,
+                audioFiles,
+                providerToken, price,
+                startParamAudio
         );
     }
 
@@ -76,8 +78,12 @@ public record AppConfig(
         return adminIds != null && adminIds.contains(userId);
     }
 
-    public boolean yooKassaEnabled() {
-        return yooShopId != null && !yooShopId.isBlank() && yooSecretKey != null && !yooSecretKey.isBlank();
+    public boolean paymentsEnabled() {
+        return yooProviderToken != null && !yooProviderToken.isBlank();
+    }
+
+    public String audioDeepLink() {
+        return "https://t.me/" + botUsername + "?start=" + startParamAudio;
     }
 
     private static String env(String key, String def) {

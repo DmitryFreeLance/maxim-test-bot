@@ -4,24 +4,33 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
+import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery;
 import org.telegram.telegrambots.meta.api.methods.ParseMode;
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
-import org.telegram.telegrambots.meta.api.methods.send.*;
+import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice;
+import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
+import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.send.SendAudio;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.*;
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
+import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice;
+import org.telegram.telegrambots.meta.api.objects.payments.OrderInfo;
+import org.telegram.telegrambots.meta.api.objects.payments.PreCheckoutQuery;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
+
 import ru.maximalexeev.bot.db.MediaCacheRepository;
 import ru.maximalexeev.bot.db.PaymentRepository;
 import ru.maximalexeev.bot.db.UserRepository;
-import ru.maximalexeev.bot.db.models.*;
+import ru.maximalexeev.bot.db.models.PaymentStatus;
+import ru.maximalexeev.bot.db.models.QuizResult;
+import ru.maximalexeev.bot.db.models.UserState;
 
-import java.io.ByteArrayInputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -32,31 +41,22 @@ public class MaximTestBot extends TelegramLongPollingBot {
     private final UserRepository userRepo;
     private final PaymentRepository paymentRepo;
     private final MediaCacheRepository mediaCacheRepo;
-    private final YooKassaClient yoo;
-    private final ScheduledExecutorService scheduler;
 
-    private final PaymentWatcher paymentWatcher;
+    private final ScheduledExecutorService scheduler;
 
     public MaximTestBot(AppConfig config,
                         UserRepository userRepo,
                         PaymentRepository paymentRepo,
-                        MediaCacheRepository mediaCacheRepo,
-                        YooKassaClient yoo) {
+                        MediaCacheRepository mediaCacheRepo) {
         super(config.botToken());
         this.config = config;
         this.userRepo = userRepo;
         this.paymentRepo = paymentRepo;
         this.mediaCacheRepo = mediaCacheRepo;
-        this.yoo = yoo;
 
-        this.scheduler = Executors.newScheduledThreadPool(4);
-
-        this.paymentWatcher = (yoo != null)
-                ? new PaymentWatcher(scheduler, yoo, paymentRepo)
-                : null;
+        this.scheduler = Executors.newScheduledThreadPool(2);
 
         try {
-            // команды (не кнопки) — просто удобство
             execute(new SetMyCommands(List.of(
                     new BotCommand("/start", "Начать тест"),
                     new BotCommand("/admin", "Админ-панель")
@@ -70,18 +70,22 @@ public class MaximTestBot extends TelegramLongPollingBot {
     }
 
     public void shutdown() {
-        try {
-            scheduler.shutdownNow();
-        } catch (Exception ignored) {}
+        try { scheduler.shutdownNow(); } catch (Exception ignored) {}
     }
 
     @Override
     public void onUpdateReceived(Update update) {
         try {
+            if (update.hasPreCheckoutQuery()) {
+                onPreCheckout(update.getPreCheckoutQuery());
+                return;
+            }
+
             if (update.hasCallbackQuery()) {
                 onCallback(update.getCallbackQuery());
                 return;
             }
+
             if (update.hasMessage()) {
                 onMessage(update.getMessage());
             }
@@ -91,8 +95,6 @@ public class MaximTestBot extends TelegramLongPollingBot {
     }
 
     private void onMessage(Message msg) throws Exception {
-        if (!msg.hasText()) return;
-
         long chatId = msg.getChatId();
         User tgUser = msg.getFrom();
         if (tgUser == null) return;
@@ -100,9 +102,24 @@ public class MaximTestBot extends TelegramLongPollingBot {
         userRepo.upsertUser(chatId, tgUser);
         UserRepository.UserRow u = userRepo.get(chatId);
 
+        // Успешная оплата приходит как message.successful_payment
+        if (msg.getSuccessfulPayment() != null) {
+            handleSuccessfulPayment(chatId, msg);
+            return;
+        }
+
+        if (!msg.hasText()) return;
         String text = msg.getText().trim();
 
-        if (text.equals("/start") || text.startsWith("/start@")) {
+        // /start или /start <param>
+        if (text.equals("/start") || text.startsWith("/start@") || text.startsWith("/start ")) {
+            String param = extractStartParam(text);
+            if (param != null && param.equals(config.startParamAudio())) {
+                // диплинк -> сразу оффер
+                sendAudioOffer(chatId);
+                return;
+            }
+
             userRepo.resetForStart(chatId);
             sendWelcome(chatId);
             return;
@@ -119,14 +136,8 @@ public class MaximTestBot extends TelegramLongPollingBot {
             return;
         }
 
-        // состояние пользователя
+        // дефолт
         if (u == null) return;
-
-        if (u.state() == UserState.AWAITING_RECEIPT_CONTACT) {
-            handleReceiptContactInput(chatId, tgUser, text);
-            return;
-        }
-
         if (u.state() == UserState.ADMIN_BROADCAST_WAIT_TEXT) {
             if (!config.isAdmin(tgUser.getId())) {
                 sendText(chatId, "⛔️ Нет доступа.");
@@ -139,8 +150,16 @@ public class MaximTestBot extends TelegramLongPollingBot {
             return;
         }
 
-        // дефолт
         sendText(chatId, "Напиши /start чтобы начать тест 🙂");
+    }
+
+    private String extractStartParam(String text) {
+        // варианты:
+        // "/start 2"
+        // "/start@MyBot 2"
+        String[] parts = text.split("\\s+");
+        if (parts.length < 2) return null;
+        return parts[1].trim();
     }
 
     private void onCallback(CallbackQuery cq) throws Exception {
@@ -191,7 +210,6 @@ public class MaximTestBot extends TelegramLongPollingBot {
                 editOrSendQuestion(cq, q + 1);
                 answerCb(cq, "Принято ✅");
             } else {
-                // финал
                 QuizResult res = QuizContent.calcResult(newScore);
                 userRepo.finishQuiz(chatId, res, newScore);
                 editOrSendResult(cq, res, newScore);
@@ -200,63 +218,33 @@ public class MaximTestBot extends TelegramLongPollingBot {
             return;
         }
 
-        // PDF кнопки
+        // PDF
         if (data.startsWith("pdf:")) {
             String key = data.substring("pdf:".length());
             QuizResult r = QuizResult.valueOf(key);
 
             sendPdfForResult(chatId, r);
 
-            userRepo.markUpsellSentNow(chatId);
-            scheduler.schedule(() -> {
-                try {
-                    sendUpsell(chatId);
-                } catch (Exception e) {
-                    log.warn("upsell send failed: {}", e.toString());
-                }
-            }, 10, java.util.concurrent.TimeUnit.SECONDS);
-
             answerCb(cq, "Отправляю файл 📎");
             return;
         }
 
-        // покупка аудио
-        if (data.equals("audio:buy")) {
-            if (yoo == null) {
-                sendText(chatId, "⚠️ Оплата сейчас недоступна (не настроены ключи кассы). Напишите администратору.");
+        // Оффер аудио (из диплинка или вручную)
+        if (data.equals("audio:offer")) {
+            sendAudioOffer(chatId);
+            answerCb(cq, "Ок");
+            return;
+        }
+
+        // Кнопка "Скачать аудио гид" -> отправляем invoice
+        if (data.equals("audio:invoice")) {
+            if (!config.paymentsEnabled()) {
+                sendText(chatId, "⚠️ Оплата сейчас недоступна (не настроен YOOKASSA_PROVIDER_TOKEN).");
                 answerCb(cq, "Оплата недоступна");
                 return;
             }
-            userRepo.setState(chatId, UserState.AWAITING_RECEIPT_CONTACT);
-
-            InlineKeyboardMarkup kb = InlineKeyboards.oneColumn(List.of(
-                    InlineKeyboards.cb("❌ Отмена", "audio:cancel")
-            ));
-
-            sendHtml(chatId, """
-                    🧾 <b>Для отправки чека</b> напишите <b>email</b> или <b>номер телефона</b> (только цифры, можно с +).
-
-                    Пример:
-                    • email: test@example.com
-                    • телефон: +79001234567
-                    """, kb);
-
-            answerCb(cq, "Введите контакт для чека");
-            return;
-        }
-
-        if (data.equals("audio:cancel")) {
-            userRepo.setState(chatId, UserState.IDLE);
-            sendText(chatId, "Ок 🙂");
-            answerCb(cq, "Отменено");
-            return;
-        }
-
-        // проверка оплаты
-        if (data.startsWith("pay:check:")) {
-            String paymentId = data.substring("pay:check:".length());
-            handleCheckPayment(chatId, paymentId);
-            answerCb(cq, "Проверяю оплату...");
+            sendAudioInvoice(chatId);
+            answerCb(cq, "Счет отправлен");
             return;
         }
 
@@ -300,8 +288,161 @@ public class MaximTestBot extends TelegramLongPollingBot {
             return;
         }
 
-        // fallback
         answerCb(cq, "Ок");
+    }
+
+    // =========================
+    // Payments (Telegram Invoice)
+    // =========================
+
+    private void sendAudioOffer(long chatId) throws TelegramApiException {
+        InlineKeyboardMarkup kb = InlineKeyboards.oneColumn(List.of(
+                InlineKeyboards.cb("Скачать аудио гид", "audio:invoice")
+        ));
+
+        // текст ровно как вы просили (можно оставить в QuizContent.upsellText())
+        sendHtml(chatId, """
+                ✨ Сделайте шаг к совершенству ✨
+
+                🎧 Послушайте аудио-гид "Мужской переводчик" и получите тонкую настройку вашей системы понимания.
+
+                💞 Это инструмент для тех, кто не останавливается на достигнутом и хочет построить по-настоящему крепкую связь.
+
+                Стоимость 490р
+                """, kb);
+    }
+
+    private void sendAudioInvoice(long chatId) throws Exception {
+        // payload = наш идентификатор заказа (будем хранить его как payment_id)
+        String payload = "audio_guide:" + chatId + ":" + UUID.randomUUID();
+
+        int priceKopeks = config.audioPriceRub().movePointRight(2).intValueExact();
+
+        SendInvoice inv = new SendInvoice();
+        inv.setChatId(chatId);
+        inv.setTitle("Аудио-гид «Мужской переводчик»");
+        inv.setDescription("Доступ к пакету из 5 аудиофайлов.");
+        inv.setPayload(payload);
+        inv.setProviderToken(config.yooProviderToken());
+        inv.setCurrency("RUB");
+        inv.setPrices(List.of(new LabeledPrice("Аудио-гид", priceKopeks)));
+
+        // чтобы получить email/телефон для чека прямо в Telegram
+        inv.setNeedEmail(true);
+        inv.setNeedPhoneNumber(true);
+        inv.setSendEmailToProvider(true);
+        inv.setSendPhoneNumberToProvider(true);
+
+        // сохраняем платеж как pending
+        paymentRepo.create(
+                payload,
+                chatId,
+                config.audioPriceRub().setScale(2).toPlainString(),
+                PaymentStatus.PENDING,
+                null,
+                null
+        );
+        userRepo.setState(chatId, UserState.PAYMENT_PENDING);
+
+        execute(inv);
+    }
+
+    private void onPreCheckout(PreCheckoutQuery pcq) {
+        try {
+            String payload = pcq.getInvoicePayload();
+            boolean ok = false;
+            String error = null;
+
+            // проверим что такой payload есть в БД
+            try {
+                var row = paymentRepo.get(payload);
+                ok = (row != null && !row.delivered());
+                if (!ok) error = "Платеж не найден или уже обработан.";
+            } catch (Exception e) {
+                ok = false;
+                error = "Ошибка проверки платежа. Попробуйте еще раз.";
+            }
+
+            AnswerPreCheckoutQuery ans = new AnswerPreCheckoutQuery();
+            ans.setPreCheckoutQueryId(pcq.getId());
+            ans.setOk(ok);
+            if (!ok && error != null) ans.setErrorMessage(error);
+            execute(ans);
+        } catch (Exception e) {
+            log.warn("pre_checkout handling failed: {}", e.toString());
+        }
+    }
+
+    private void handleSuccessfulPayment(long chatId, Message msg) throws Exception {
+        var sp = msg.getSuccessfulPayment();
+        if (sp == null) return;
+
+        String payload = sp.getInvoicePayload();
+        var row = paymentRepo.get(payload);
+        if (row == null) {
+            // на всякий случай
+            sendText(chatId, "⚠️ Платеж получен, но не найден в базе. Напишите администратору.");
+            return;
+        }
+        if (row.delivered()) {
+            // уже выдали
+            return;
+        }
+
+        paymentRepo.updateStatus(payload, PaymentStatus.SUCCEEDED);
+
+        // сохраним контакт из OrderInfo (email/phone)
+        String receiptContact = null;
+        OrderInfo oi = sp.getOrderInfo();
+        if (oi != null) {
+            if (oi.getEmail() != null && !oi.getEmail().isBlank()) receiptContact = oi.getEmail();
+            else if (oi.getPhoneNumber() != null && !oi.getPhoneNumber().isBlank()) receiptContact = oi.getPhoneNumber();
+        }
+        if (receiptContact != null) {
+            paymentRepo.updateReceiptContact(payload, receiptContact);
+            userRepo.setReceiptContact(chatId, receiptContact);
+        }
+
+        // выдаем 5 аудио
+        deliverAudioBundle(chatId, payload);
+    }
+
+    private void deliverAudioBundle(long chatId, String paymentId) throws Exception {
+        var row = paymentRepo.get(paymentId);
+        if (row == null || row.delivered()) return;
+
+        // отправляем 5 файлов подряд
+        for (String fileName : config.audioFiles()) {
+            Path path = config.mediaDir().resolve(fileName);
+            if (!Files.exists(path)) {
+                sendText(chatId, "⚠️ Аудио-файл не найден в папке media: " + fileName);
+                continue;
+            }
+
+            String cacheKey = "audio:" + fileName;
+            String cachedFileId = mediaCacheRepo.getFileId(cacheKey);
+
+            SendAudio sa = new SendAudio();
+            sa.setChatId(chatId);
+            sa.setCaption(fileName);
+
+            Message m;
+            if (cachedFileId != null) {
+                sa.setAudio(new org.telegram.telegrambots.meta.api.objects.InputFile(cachedFileId));
+                m = execute(sa);
+            } else {
+                sa.setAudio(new org.telegram.telegrambots.meta.api.objects.InputFile(path.toFile(), fileName));
+                m = execute(sa);
+                if (m != null && m.getAudio() != null && m.getAudio().getFileId() != null) {
+                    mediaCacheRepo.putFileId(cacheKey, m.getAudio().getFileId());
+                }
+            }
+        }
+
+        paymentRepo.markDelivered(paymentId);
+        userRepo.setState(chatId, UserState.IDLE);
+
+        sendText(chatId, "✅ Оплата прошла! Я отправил(а) вам 5 аудиофайлов.");
     }
 
     // =========================
@@ -340,7 +481,6 @@ public class MaximTestBot extends TelegramLongPollingBot {
         try {
             execute(em);
         } catch (TelegramApiException e) {
-            // fallback: send new message
             sendHtml(cq.getMessage().getChatId(), text, answerKeyboard(qIndex));
         }
     }
@@ -405,142 +545,15 @@ public class MaximTestBot extends TelegramLongPollingBot {
         }
     }
 
-    private void sendUpsell(long chatId) throws TelegramApiException {
+    private void sendDeepLinkAfterPdf(long chatId) throws TelegramApiException {
         InlineKeyboardMarkup kb = InlineKeyboards.oneColumn(List.of(
-                InlineKeyboards.cb("🔥СКАЧАТЬ АУДИО-ГИД", "audio:buy")
+                InlineKeyboards.url("🎧 Получить аудио-гид", config.audioDeepLink())
         ));
-        sendHtml(chatId, QuizContent.upsellText(), kb);
-    }
-
-    // =========================
-    // Payment flow
-    // =========================
-
-    private void handleReceiptContactInput(long chatId, User tgUser, String text) throws Exception {
-        Validation.Contact contact = Validation.parseContact(text);
-        if (contact == null) {
-            sendHtml(chatId, """
-                    ⚠️ Не похоже на email или телефон.
-
-                    Напишите <b>email</b> (test@example.com) или <b>телефон</b> (+79001234567).
-                    """, InlineKeyboards.oneColumn(List.of(
-                    InlineKeyboards.cb("❌ Отмена", "audio:cancel")
-            )));
-            return;
-        }
-
-        userRepo.setReceiptContact(chatId, contact.value());
-
-        String fullName = ((tgUser.getFirstName() == null ? "" : tgUser.getFirstName()) + " " +
-                (tgUser.getLastName() == null ? "" : tgUser.getLastName())).trim();
-
-        String description = "Аудио-гид \"Мужской переводчик\"";
-
-        YooKassaClient.CreatedPayment created = yoo.createAudioPayment(chatId, description, contact, fullName);
-
-        paymentRepo.create(
-                created.id(),
-                chatId,
-                config.audioPriceRub().setScale(2).toPlainString(),
-                PaymentStatus.PENDING,
-                created.confirmationUrl(),
-                contact.value()
-        );
-
-        userRepo.setState(chatId, UserState.PAYMENT_PENDING);
-
-        InlineKeyboardMarkup kb = InlineKeyboards.oneColumn(List.of(
-                InlineKeyboards.url("💳 ОПЛАТИТЬ 490 ₽", created.confirmationUrl()),
-                InlineKeyboards.cb("✅ ПРОВЕРИТЬ ОПЛАТУ", "pay:check:" + created.id()),
-                InlineKeyboards.cb("❌ Отмена", "audio:cancel")
-        ));
-
         sendHtml(chatId, """
-                ✅ Отлично!
+                ✅ PDF получен.
 
-                1) Нажмите <b>«ОПЛАТИТЬ 490 ₽»</b> и завершите оплату.
-                2) Затем нажмите <b>«ПРОВЕРИТЬ ОПЛАТУ»</b> — и я отправлю файл 🎬
+                Хотите продолжение? Откройте оффер по кнопке ниже:
                 """, kb);
-
-        // Авто-проверка (чтобы выдать mp4 без лишних кликов)
-        if (paymentWatcher != null) {
-            paymentWatcher.watch(created.id(), paymentId -> deliverAudio(chatId, paymentId));
-        }
-    }
-
-    private void handleCheckPayment(long chatId, String paymentId) throws Exception {
-        if (yoo == null) {
-            sendText(chatId, "⚠️ Оплата не настроена.");
-            return;
-        }
-
-        PaymentRepository.PaymentRow row = paymentRepo.get(paymentId);
-        if (row == null) {
-            sendText(chatId, "⚠️ Платеж не найден.");
-            return;
-        }
-
-        if (row.delivered()) {
-            sendText(chatId, "✅ Этот файл уже был выдан.");
-            return;
-        }
-
-        YooKassaClient.PaymentInfo info = yoo.getPayment(paymentId);
-        PaymentStatus st = switch (info.status()) {
-            case "pending" -> PaymentStatus.PENDING;
-            case "succeeded" -> PaymentStatus.SUCCEEDED;
-            case "canceled" -> PaymentStatus.CANCELED;
-            default -> PaymentStatus.UNKNOWN;
-        };
-
-        paymentRepo.updateStatus(paymentId, st);
-
-        if (st == PaymentStatus.SUCCEEDED && info.paid()) {
-            deliverAudio(chatId, paymentId);
-            return;
-        }
-
-        if (st == PaymentStatus.CANCELED) {
-            sendText(chatId, "❌ Платеж отменен или не был завершен.");
-            return;
-        }
-
-        sendText(chatId, "⏳ Оплата еще не прошла. Попробуйте проверить через минуту.");
-    }
-
-    private void deliverAudio(long chatId, String paymentId) throws Exception {
-        PaymentRepository.PaymentRow row = paymentRepo.get(paymentId);
-        if (row == null) return;
-        if (row.delivered()) return;
-
-        Path path = config.mediaDir().resolve(config.audioMp4());
-        if (!Files.exists(path)) {
-            sendText(chatId, "⚠️ Файл 1.mp4 не найден в папке media.");
-            return;
-        }
-
-        String cacheKey = "mp4:" + config.audioMp4();
-        String cachedFileId = mediaCacheRepo.getFileId(cacheKey);
-
-        SendVideo sv = new SendVideo();
-        sv.setChatId(chatId);
-        sv.setCaption("🎬 Готово! Вот ваш аудио-гид (файл) ✅");
-        sv.setParseMode(ParseMode.HTML);
-
-        Message m;
-        if (cachedFileId != null) {
-            sv.setVideo(new org.telegram.telegrambots.meta.api.objects.InputFile(cachedFileId));
-            m = execute(sv);
-        } else {
-            sv.setVideo(new org.telegram.telegrambots.meta.api.objects.InputFile(path.toFile(), config.audioMp4()));
-            m = execute(sv);
-            if (m != null && m.getVideo() != null && m.getVideo().getFileId() != null) {
-                mediaCacheRepo.putFileId(cacheKey, m.getVideo().getFileId());
-            }
-        }
-
-        paymentRepo.markDelivered(paymentId);
-        userRepo.setState(chatId, UserState.IDLE);
     }
 
     // =========================
@@ -613,19 +626,18 @@ public class MaximTestBot extends TelegramLongPollingBot {
     }
 
     private void sendUsersCsv(long chatId) throws Exception {
-        // простой CSV: chat_id
         long[] ids = userRepo.listAllChatIds();
         StringBuilder sb = new StringBuilder();
         sb.append("chat_id\n");
         for (long id : ids) sb.append(id).append("\n");
 
-        byte[] bytes = sb.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
-        SendDocument sd = new SendDocument();
+        org.telegram.telegrambots.meta.api.methods.send.SendDocument sd = new org.telegram.telegrambots.meta.api.methods.send.SendDocument();
         sd.setChatId(chatId);
         sd.setCaption("📤 users.csv");
         sd.setDocument(new org.telegram.telegrambots.meta.api.objects.InputFile(
-                new ByteArrayInputStream(bytes), "users.csv"
+                new java.io.ByteArrayInputStream(bytes), "users.csv"
         ));
 
         execute(sd);

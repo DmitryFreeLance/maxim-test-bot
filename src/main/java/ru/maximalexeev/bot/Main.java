@@ -18,12 +18,8 @@ public class Main {
         PaymentRepository paymentRepo = new PaymentRepository(db);
         MediaCacheRepository mediaCacheRepo = new MediaCacheRepository(db);
 
-        YooKassaClient yooKassaClient = null;
-        if (config.yooKassaEnabled()) {
-            yooKassaClient = new YooKassaClient(config);
-        }
-
-        MaximTestBot bot = new MaximTestBot(config, userRepo, paymentRepo, mediaCacheRepo, yooKassaClient);
+        // YooKassaClient/PaymentWatcher больше не нужны для Telegram Invoice
+        MaximTestBot bot = new MaximTestBot(config, userRepo, paymentRepo, mediaCacheRepo);
 
         TelegramBotsApi botsApi = new TelegramBotsApi(DefaultBotSession.class);
         botsApi.registerBot(bot);
