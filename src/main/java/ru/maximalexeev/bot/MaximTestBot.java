@@ -9,11 +9,14 @@ import org.telegram.telegrambots.meta.api.methods.ParseMode;
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
 import org.telegram.telegrambots.meta.api.methods.invoices.SendInvoice;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
+import org.telegram.telegrambots.meta.api.methods.send.SendMediaGroup;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendAudio;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.*;
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
+import org.telegram.telegrambots.meta.api.objects.media.InputMedia;
+import org.telegram.telegrambots.meta.api.objects.media.InputMediaAudio;
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice;
 import org.telegram.telegrambots.meta.api.objects.payments.OrderInfo;
 import org.telegram.telegrambots.meta.api.objects.payments.PreCheckoutQuery;
@@ -411,7 +414,12 @@ public class MaximTestBot extends TelegramLongPollingBot {
         var row = paymentRepo.get(paymentId);
         if (row == null || row.delivered()) return;
 
-        // отправляем 5 файлов подряд
+        // Собираем альбом из 5 аудио (2..10 допустимо)
+        java.util.ArrayList<InputMedia> medias = new java.util.ArrayList<>();
+
+        // Чтобы потом закешировать file_id по индексу
+        java.util.ArrayList<String> fileNames = new java.util.ArrayList<>();
+
         for (String fileName : config.audioFiles()) {
             Path path = config.mediaDir().resolve(fileName);
             if (!Files.exists(path)) {
@@ -419,30 +427,53 @@ public class MaximTestBot extends TelegramLongPollingBot {
                 continue;
             }
 
+            sendText(chatId, "Оплата прошла успешно ✅ \n\nВот ваша настройка системы понимания \uD83D\uDC47");
+
             String cacheKey = "audio:" + fileName;
             String cachedFileId = mediaCacheRepo.getFileId(cacheKey);
 
-            SendAudio sa = new SendAudio();
-            sa.setChatId(chatId);
-            sa.setCaption(fileName);
+            InputMediaAudio media = new InputMediaAudio();
 
-            Message m;
             if (cachedFileId != null) {
-                sa.setAudio(new org.telegram.telegrambots.meta.api.objects.InputFile(cachedFileId));
-                m = execute(sa);
+                // отправка по file_id
+                media.setMedia(cachedFileId);
             } else {
-                sa.setAudio(new org.telegram.telegrambots.meta.api.objects.InputFile(path.toFile(), fileName));
-                m = execute(sa);
-                if (m != null && m.getAudio() != null && m.getAudio().getFileId() != null) {
-                    mediaCacheRepo.putFileId(cacheKey, m.getAudio().getFileId());
-                }
+                // отправка файлом
+                media.setMedia(String.valueOf(new InputFile(path.toFile(), fileName)));
+            }
+
+            // Можно добавить подпись (у каждого элемента своя)
+            media.setCaption(fileName);
+
+            medias.add(media);
+            fileNames.add(fileName);
+        }
+
+        if (medias.size() < 2) {
+            // sendMediaGroup требует 2-10 элементов
+            sendText(chatId, "⚠️ Не удалось собрать альбом (нужно минимум 2 аудио). Проверьте файлы в /media.");
+            return;
+        }
+
+        SendMediaGroup smg = new SendMediaGroup();
+        smg.setChatId(chatId);
+        smg.setMedias(medias);
+
+        // ВАЖНО: execute вернет список Message по порядку
+        var sentMessages = execute(smg);
+
+        // Кешируем file_id для тех, что были загружены файлом
+        // (Если отправляли по cachedFileId — кеш уже есть, можно не трогать)
+        for (int i = 0; i < sentMessages.size() && i < fileNames.size(); i++) {
+            Message m = sentMessages.get(i);
+            if (m != null && m.getAudio() != null && m.getAudio().getFileId() != null) {
+                String fn = fileNames.get(i);
+                mediaCacheRepo.putFileId("audio:" + fn, m.getAudio().getFileId());
             }
         }
 
         paymentRepo.markDelivered(paymentId);
         userRepo.setState(chatId, UserState.IDLE);
-
-        sendText(chatId, "✅ Оплата прошла! Я отправил(а) вам 5 аудиофайлов.");
     }
 
     // =========================
