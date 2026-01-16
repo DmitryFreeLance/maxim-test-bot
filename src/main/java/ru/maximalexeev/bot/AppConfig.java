@@ -43,14 +43,14 @@ public record AppConfig(
         String dbPath = env("DB_PATH", "/app/data/bot.db");
         Path mediaDir = Path.of(env("MEDIA_DIR", "/app/media"));
 
-        String pdfRisk = env("PDF_RISK", "risk.pdf");
-        String pdfNeighbors = env("PDF_NEIGHBORS", "neighbors.pdf");
-        String pdfAllies = env("PDF_ALLIES", "allies.pdf");
+        String pdfRisk = env("PDF_RISK", "ХОЛОДНАЯ ВОЙНА.pdf");
+        String pdfNeighbors = env("PDF_NEIGHBORS", "Как перестать быть соседями.pdf");
+        String pdfAllies = env("PDF_ALLIES", "Секреты сильных пар.pdf");
 
         // Можно переопределять одной переменной:
         // AUDIO_FILES="Стоп-кран.m4a,Система.m4a,Секс и быт.m4a,Пещера.m4a,Инструкция.m4a"
         String audioFilesRaw = env("AUDIO_FILES",
-                "Стоп-кран.m4a,Система.m4a,Секс и быт.m4a,Пещера.m4a,Инструкция.m4a");
+                "Пещера.wav,Стоп-кран.wav,Инструкция.wav,Секс и быт.wav,Система.wav");
         List<String> audioFiles = Arrays.stream(audioFilesRaw.split(","))
                 .map(String::trim)
                 .filter(s -> !s.isBlank())
