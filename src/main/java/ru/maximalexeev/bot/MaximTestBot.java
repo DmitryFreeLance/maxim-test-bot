@@ -411,13 +411,13 @@ public class MaximTestBot extends TelegramLongPollingBot {
     }
 
     private void deliverAudioBundle(long chatId, String paymentId) throws Exception {
+        sendText(chatId, "Оплата прошла успешно ✅ \n\nВот ваша настройка системы понимания 👇");
+
         var row = paymentRepo.get(paymentId);
         if (row == null || row.delivered()) return;
 
         // Собираем альбом из 5 аудио (2..10 допустимо)
         java.util.ArrayList<InputMedia> medias = new java.util.ArrayList<>();
-
-        // Чтобы потом закешировать file_id по индексу
         java.util.ArrayList<String> fileNames = new java.util.ArrayList<>();
 
         for (String fileName : config.audioFiles()) {
@@ -427,26 +427,28 @@ public class MaximTestBot extends TelegramLongPollingBot {
                 continue;
             }
 
-            sendText(chatId, "Оплата прошла успешно ✅ \n\nВот ваша настройка системы понимания \uD83D\uDC47");
-
             String cacheKey = "audio:" + fileName;
             String cachedFileId = mediaCacheRepo.getFileId(cacheKey);
 
             InputMediaAudio media = new InputMediaAudio();
+            try {
+                if (cachedFileId != null && !cachedFileId.isBlank()) {
+                    // отправка по file_id
+                    media.setMedia(cachedFileId);
+                } else {
+                    // отправка локальным файлом (для вашей версии telegrambots)
+                    media.setMedia(path.toFile(), fileName);
+                }
 
-            if (cachedFileId != null) {
-                // отправка по file_id
-                media.setMedia(cachedFileId);
-            } else {
-                // отправка файлом
-                media.setMedia(String.valueOf(new InputFile(path.toFile(), fileName)));
+                // подпись (по желанию)
+                media.setCaption(fileName);
+
+                medias.add(media);
+                fileNames.add(fileName);
+            } catch (Exception e) {
+                log.error("Failed to prepare audio media for {}: {}", fileName, e.getMessage(), e);
+                sendText(chatId, "⚠️ Не удалось подготовить аудио-файл: " + fileName);
             }
-
-            // Можно добавить подпись (у каждого элемента своя)
-            media.setCaption(fileName);
-
-            medias.add(media);
-            fileNames.add(fileName);
         }
 
         if (medias.size() < 2) {
@@ -459,11 +461,17 @@ public class MaximTestBot extends TelegramLongPollingBot {
         smg.setChatId(chatId);
         smg.setMedias(medias);
 
-        // ВАЖНО: execute вернет список Message по порядку
-        var sentMessages = execute(smg);
+        // execute вернет список Message по порядку
+        List<Message> sentMessages;
+        try {
+            sentMessages = execute(smg);
+        } catch (TelegramApiException e) {
+            log.error("sendMediaGroup failed: {}", e.getMessage(), e);
+            sendText(chatId, "⚠️ Не удалось отправить аудио (ошибка Telegram). Напишите администратору.");
+            return;
+        }
 
         // Кешируем file_id для тех, что были загружены файлом
-        // (Если отправляли по cachedFileId — кеш уже есть, можно не трогать)
         for (int i = 0; i < sentMessages.size() && i < fileNames.size(); i++) {
             Message m = sentMessages.get(i);
             if (m != null && m.getAudio() != null && m.getAudio().getFileId() != null) {
