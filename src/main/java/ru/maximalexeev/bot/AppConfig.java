@@ -43,7 +43,7 @@ public record AppConfig(
         String dbPath = env("DB_PATH", "/app/data/bot.db");
         Path mediaDir = Path.of(env("MEDIA_DIR", "/app/media"));
 
-        String pdfRisk = env("PDF_RISK", "ХОЛОДНАЯ ВОЙНА.pdf");
+        String pdfRisk = env("PDF_RISK", "Холодная война.pdf");
         String pdfNeighbors = env("PDF_NEIGHBORS", "Как перестать быть соседями.pdf");
         String pdfAllies = env("PDF_ALLIES", "Секреты сильных пар.pdf");
 
