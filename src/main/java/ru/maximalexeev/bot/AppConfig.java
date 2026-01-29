@@ -25,6 +25,10 @@ public record AppConfig(
         // Telegram Payments (YooKassa provider via BotFather)
         String yooProviderToken,
         BigDecimal audioPriceRub,
+        BigDecimal systemPriceRub,
+
+        // course link
+        String systemMaterialsUrl,
 
         // deep links
         String startParamAudio
@@ -47,8 +51,6 @@ public record AppConfig(
         String pdfNeighbors = env("PDF_NEIGHBORS", "Как перестать быть соседями.pdf");
         String pdfAllies = env("PDF_ALLIES", "Секреты сильных пар.pdf");
 
-        // Можно переопределять одной переменной:
-        // AUDIO_FILES="Стоп-кран.m4a,Система.m4a,Секс и быт.m4a,Пещера.m4a,Инструкция.m4a"
         String audioFilesRaw = env("AUDIO_FILES",
                 "Пещера.wav,Стоп-кран.wav,Инструкция.wav,Секс и быт.wav,Система.wav");
         List<String> audioFiles = Arrays.stream(audioFilesRaw.split(","))
@@ -56,20 +58,22 @@ public record AppConfig(
                 .filter(s -> !s.isBlank())
                 .collect(Collectors.toList());
 
-        BigDecimal price = new BigDecimal(env("AUDIO_PRICE_RUB", "490.00"));
+        BigDecimal audioPrice = new BigDecimal(env("AUDIO_PRICE_RUB", "490.00"));
+        BigDecimal systemPrice = new BigDecimal(env("SYSTEM_PRICE_RUB", "1990.00"));
 
-        // Provider token from BotFather -> Payments -> YooKassa
         String providerToken = env("YOOKASSA_PROVIDER_TOKEN", "");
 
-        // deep-link start param for audio offer
         String startParamAudio = env("START_PARAM_AUDIO", "2");
+
+        String materialsUrl = env("SYSTEM_MATERIALS_URL", "https://sistema-soyuzniki-tx3upgy.gamma.site/");
 
         return new AppConfig(
                 token, username, admins,
                 dbPath, mediaDir,
                 pdfRisk, pdfNeighbors, pdfAllies,
                 audioFiles,
-                providerToken, price,
+                providerToken, audioPrice, systemPrice,
+                materialsUrl,
                 startParamAudio
         );
     }

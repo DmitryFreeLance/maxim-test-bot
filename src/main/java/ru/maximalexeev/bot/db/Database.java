@@ -35,7 +35,17 @@ public class Database {
                       score INTEGER NOT NULL DEFAULT 0,
                       last_result TEXT,
                       receipt_contact TEXT,
+
                       upsell_sent_at INTEGER,
+                      quiz_finished_at INTEGER,
+
+                      audio_purchased_at INTEGER,
+                      system_purchased_at INTEGER,
+
+                      system_offer_5m_sent_at INTEGER,
+                      followup_audio_24h_sent_at INTEGER,
+                      followup_system_24h_sent_at INTEGER,
+
                       created_at INTEGER NOT NULL,
                       updated_at INTEGER NOT NULL
                     );
@@ -65,6 +75,17 @@ public class Database {
 
             s.execute("CREATE INDEX IF NOT EXISTS idx_payments_chat_id ON payments(chat_id);");
             s.execute("CREATE INDEX IF NOT EXISTS idx_users_state ON users(state);");
+
+            // ---- миграции для существующей БД (если колонок нет)
+            try { s.execute("ALTER TABLE users ADD COLUMN quiz_finished_at INTEGER;"); } catch (Exception ignored) {}
+            try { s.execute("ALTER TABLE users ADD COLUMN upsell_sent_at INTEGER;"); } catch (Exception ignored) {}
+
+            try { s.execute("ALTER TABLE users ADD COLUMN audio_purchased_at INTEGER;"); } catch (Exception ignored) {}
+            try { s.execute("ALTER TABLE users ADD COLUMN system_purchased_at INTEGER;"); } catch (Exception ignored) {}
+
+            try { s.execute("ALTER TABLE users ADD COLUMN system_offer_5m_sent_at INTEGER;"); } catch (Exception ignored) {}
+            try { s.execute("ALTER TABLE users ADD COLUMN followup_audio_24h_sent_at INTEGER;"); } catch (Exception ignored) {}
+            try { s.execute("ALTER TABLE users ADD COLUMN followup_system_24h_sent_at INTEGER;"); } catch (Exception ignored) {}
         }
     }
 

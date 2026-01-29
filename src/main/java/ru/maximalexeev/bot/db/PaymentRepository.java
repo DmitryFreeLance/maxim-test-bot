@@ -96,6 +96,41 @@ public class PaymentRepository {
         }
     }
 
+    public boolean existsForChatAfter(long chatId, long sinceMs) throws Exception {
+        try (Connection c = db.getConnection();
+             PreparedStatement ps = c.prepareStatement("""
+                 SELECT 1
+                 FROM payments
+                 WHERE chat_id=? AND created_at>=?
+                 LIMIT 1
+                 """)) {
+            ps.setLong(1, chatId);
+            ps.setLong(2, sinceMs);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    public boolean existsSucceededByPrefix(long chatId, String payloadPrefix) throws Exception {
+        try (Connection c = db.getConnection();
+             PreparedStatement ps = c.prepareStatement("""
+                 SELECT 1
+                 FROM payments
+                 WHERE chat_id=?
+                   AND status=?
+                   AND payment_id LIKE ?
+                 LIMIT 1
+                 """)) {
+            ps.setLong(1, chatId);
+            ps.setString(2, PaymentStatus.SUCCEEDED.name());
+            ps.setString(3, payloadPrefix + "%");
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
     private PaymentRow map(ResultSet rs) throws Exception {
         return new PaymentRow(
                 rs.getString("payment_id"),
