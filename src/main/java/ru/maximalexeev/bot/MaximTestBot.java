@@ -472,7 +472,8 @@ public class MaximTestBot extends TelegramLongPollingBot {
         ));
         SendMessage sm = new SendMessage();
         sm.setChatId(chatId);
-        sm.setText("Добро пожаловать в Систему! 🤝\n Доступ открыт");
+        sm.setText("Все, пути назад нет, теперь ты с нами\uD83D\uDE0E \nФайлы слишком тяжелые для переписки (там чистый концентрат без воды), поэтому я залил их по секретной ссылке.\n\n<b>Твой ключ доступа:</b>\n\uD83D\uDD13 https://drive.google.com/drive/folders/1ATxfDQ43UWyHcAxiBwF-RnDl08i8X7DJ?usp=sharing \n\nСкачивай, пока ссылка горячая, и погнали внедрять!");
+        sm.setParseMode(ParseMode.HTML);
         sm.setReplyMarkup(kb);
         execute(sm);
     }
