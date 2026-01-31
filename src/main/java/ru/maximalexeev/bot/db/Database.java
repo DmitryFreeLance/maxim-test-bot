@@ -46,6 +46,8 @@ public class Database {
                       followup_audio_24h_sent_at INTEGER,
                       followup_system_24h_sent_at INTEGER,
 
+                      system_invoice_5m_sent_at INTEGER,
+
                       created_at INTEGER NOT NULL,
                       updated_at INTEGER NOT NULL
                     );
@@ -86,6 +88,8 @@ public class Database {
             try { s.execute("ALTER TABLE users ADD COLUMN system_offer_5m_sent_at INTEGER;"); } catch (Exception ignored) {}
             try { s.execute("ALTER TABLE users ADD COLUMN followup_audio_24h_sent_at INTEGER;"); } catch (Exception ignored) {}
             try { s.execute("ALTER TABLE users ADD COLUMN followup_system_24h_sent_at INTEGER;"); } catch (Exception ignored) {}
+
+            try { s.execute("ALTER TABLE users ADD COLUMN system_invoice_5m_sent_at INTEGER;"); } catch (Exception ignored) {}
         }
     }
 

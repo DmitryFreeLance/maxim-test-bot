@@ -27,11 +27,15 @@ public record AppConfig(
         BigDecimal audioPriceRub,
         BigDecimal systemPriceRub,
 
-        // course link
+        // course link (после оплаты)
         String systemMaterialsUrl,
 
+        // offer landing url (кнопка "ЗАБРАТЬ СИСТЕМУ")
+        String systemOfferUrl,
+
         // deep links
-        String startParamAudio
+        String startParamAudio,
+        String startParamSystem
 ) {
     public static AppConfig fromEnv() {
         String token = require("BOT_TOKEN");
@@ -64,8 +68,10 @@ public record AppConfig(
         String providerToken = env("YOOKASSA_PROVIDER_TOKEN", "");
 
         String startParamAudio = env("START_PARAM_AUDIO", "2");
+        String startParamSystem = env("START_PARAM_SYSTEM", "3");
 
         String materialsUrl = env("SYSTEM_MATERIALS_URL", "https://sistema-soyuzniki-tx3upgy.gamma.site/");
+        String systemOfferUrl = env("SYSTEM_OFFER_URL", "https://competent-dog-i4vhuv0.gamma.site/");
 
         return new AppConfig(
                 token, username, admins,
@@ -74,7 +80,9 @@ public record AppConfig(
                 audioFiles,
                 providerToken, audioPrice, systemPrice,
                 materialsUrl,
-                startParamAudio
+                systemOfferUrl,
+                startParamAudio,
+                startParamSystem
         );
     }
 
@@ -88,6 +96,10 @@ public record AppConfig(
 
     public String audioDeepLink() {
         return "https://t.me/" + botUsername + "?start=" + startParamAudio;
+    }
+
+    public String systemDeepLink() {
+        return "https://t.me/" + botUsername + "?start=" + startParamSystem;
     }
 
     private static String env(String key, String def) {

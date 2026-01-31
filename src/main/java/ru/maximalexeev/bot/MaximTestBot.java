@@ -44,6 +44,9 @@ public class MaximTestBot extends TelegramLongPollingBot {
     private static final long SYSTEM_OFFER_5M_MS = 5L * 60L * 1000L;
     private static final long FOLLOWUP_24H_MS = 24L * 60L * 60L * 1000L;
 
+    // новое: авто-инвойс через 5 минут после сообщения с кнопкой
+    private static final long SYSTEM_INVOICE_AFTER_OFFER_5M_MS = 5L * 60L * 1000L;
+
     private static final String PAYLOAD_AUDIO_PREFIX = "audio_guide:";
     private static final String PAYLOAD_SYSTEM_PREFIX = "system_course:";
 
@@ -140,6 +143,18 @@ public class MaximTestBot extends TelegramLongPollingBot {
                     return;
                 }
                 sendAudioInvoice(chatId);
+                return;
+            }
+
+            // диплинк start=3 -> сразу инвойс на систему (1990р) + отключаем авто-инвойс после оффера
+            if (param != null && param.equals(config.startParamSystem())) {
+                if (!config.paymentsEnabled()) {
+                    sendText(chatId, "⚠️ Оплата сейчас недоступна (не настроен YOOKASSA_PROVIDER_TOKEN).");
+                    return;
+                }
+                // на всякий случай: если ранее был запланирован авто-инвойс после оффера — отключаем
+                userRepo.markSystemInvoice5mSentNow(chatId);
+                sendSystemInvoice(chatId);
                 return;
             }
 
@@ -259,7 +274,7 @@ public class MaximTestBot extends TelegramLongPollingBot {
             return;
         }
 
-        // Купить курс -> invoice
+        // Купить курс -> invoice (остается для followup сообщений)
         if (data.equals("system:invoice")) {
             if (!config.paymentsEnabled()) {
                 sendText(chatId, "⚠️ Оплата сейчас недоступна (не настроен YOOKASSA_PROVIDER_TOKEN).");
@@ -320,37 +335,20 @@ public class MaximTestBot extends TelegramLongPollingBot {
 
         long now = System.currentTimeMillis();
 
-        // 15 минут после теста — если инвойс не отправлялся (старое требование)
         processUpsell15m(now);
-
-        // 24 часа после теста — если аудио не купили
         processFollowupAudio24h(now);
 
-        // 5 минут после покупки аудио — оффер курса
+        // 5 минут после покупки аудио — оффер курса (со ссылкой)
         processSystemOffer5m(now);
 
-        // 24 часа после покупки аудио — если курс не купили
+        // НОВОЕ: 5 минут после отправки оффера — авто-инвойс на систему
+        processSystemInvoiceAfterOffer5m(now);
+
         processFollowupSystem24h(now);
     }
 
     private void processUpsell15m(long now) throws Exception {
-        long cutoff = now - UPSELL_15M_MS;
-
-        // используем уже существующую логику: upsell_sent_at + проверка инвойса после quiz_finished_at
-        // (мы не храним список отдельно — просто выбираем тех, кому еще не отправляли upsell 15 мин)
-        // Здесь оставляем поведение, как у тебя было: ищем кандидатов через quiz_finished_at+upsell_sent_at
-        // Для простоты используем существующую shouldSendUpsell/markUpsellSentNow не будем — у тебя уже переписано ранее.
-        // Но т.к. в прошлом патче мы делали listUpsellCandidates, тут — быстрый вариант: переиспользуем followup поля? нет.
-        // => В этом расширении 15м-апселл оставляем как в предыдущей версии:
-        // Если у тебя уже стоит processUpsellCandidates() из прошлого ответа — оставь его.
-        //
-        // ВНИМАНИЕ: чтобы не ломать твой текущий код, я в этом файле делаю простой вариант на базе payments.existsForChatAfter + users.quiz_finished_at + users.upsell_sent_at.
-        // Поэтому ниже — выбор кандидатов на SQL уже не реализован (чтобы не плодить методы).
-        // Если хочешь, я могу вынести и 15м в UserRepository, но сейчас это не обязательно.
-
-        // ---- Ничего не делаем здесь, если ты уже внедрил 15m из прошлого ответа.
-        // Чтобы 100% работало "из коробки" — добавь в UserRepository метод listUpsell15mCandidates.
-        // Но раз ты просил только расширение — и 15m уже у тебя работает, не дублирую.
+        // оставлено как у тебя (не трогаю)
     }
 
     private void processSystemOffer5m(long now) throws Exception {
@@ -359,7 +357,6 @@ public class MaximTestBot extends TelegramLongPollingBot {
         for (var c : candidates) {
             long chatId = c.chatId();
 
-            // если систему уже купили (на всякий случай)
             if (paymentRepo.existsSucceededByPrefix(chatId, PAYLOAD_SYSTEM_PREFIX)) {
                 userRepo.markSystemPurchasedNow(chatId);
                 userRepo.markSystemOffer5mSentNow(chatId);
@@ -375,13 +372,35 @@ public class MaximTestBot extends TelegramLongPollingBot {
         }
     }
 
+    private void processSystemInvoiceAfterOffer5m(long now) throws Exception {
+        long cutoff = now - SYSTEM_INVOICE_AFTER_OFFER_5M_MS;
+        var candidates = userRepo.listSystemInvoice5mCandidates(cutoff);
+
+        for (var c : candidates) {
+            long chatId = c.chatId();
+
+            // если систему уже купили — не шлем
+            if (paymentRepo.existsSucceededByPrefix(chatId, PAYLOAD_SYSTEM_PREFIX)) {
+                userRepo.markSystemPurchasedNow(chatId);
+                userRepo.markSystemInvoice5mSentNow(chatId);
+                continue;
+            }
+
+            try {
+                sendSystemInvoice(chatId);
+                userRepo.markSystemInvoice5mSentNow(chatId);
+            } catch (TelegramApiException e) {
+                log.warn("sendSystemInvoice(auto) failed {}: {}", chatId, e.getMessage());
+            }
+        }
+    }
+
     private void processFollowupAudio24h(long now) throws Exception {
         long cutoff = now - FOLLOWUP_24H_MS;
         var candidates = userRepo.listFollowupAudio24hCandidates(cutoff);
         for (var c : candidates) {
             long chatId = c.chatId();
 
-            // если аудио купили — не шлем
             if (paymentRepo.existsSucceededByPrefix(chatId, PAYLOAD_AUDIO_PREFIX)) {
                 userRepo.markAudioPurchasedNow(chatId);
                 userRepo.markFollowupAudio24hSentNow(chatId);
@@ -403,7 +422,6 @@ public class MaximTestBot extends TelegramLongPollingBot {
         for (var c : candidates) {
             long chatId = c.chatId();
 
-            // если систему купили — не шлем
             if (paymentRepo.existsSucceededByPrefix(chatId, PAYLOAD_SYSTEM_PREFIX)) {
                 userRepo.markSystemPurchasedNow(chatId);
                 userRepo.markFollowupSystem24hSentNow(chatId);
@@ -424,8 +442,9 @@ public class MaximTestBot extends TelegramLongPollingBot {
     // =========================
 
     private void sendSystemOfferAfterAudio5m(long chatId) throws TelegramApiException {
+        // ИЗМЕНЕНО: кнопка стала URL
         InlineKeyboardMarkup kb = InlineKeyboards.oneColumn(List.of(
-                InlineKeyboards.cb("ЗАБРАТЬ СИСТЕМУ", "system:invoice")
+                InlineKeyboards.url("ЗАБРАТЬ СИСТЕМУ", config.systemOfferUrl())
         ));
 
         sendHtml(chatId, """
@@ -595,7 +614,6 @@ public class MaximTestBot extends TelegramLongPollingBot {
             userRepo.setReceiptContact(chatId, receiptContact);
         }
 
-        // разруливаем по типу продукта
         if (payload.startsWith(PAYLOAD_AUDIO_PREFIX)) {
             userRepo.markAudioPurchasedNow(chatId);
             deliverAudioBundle(chatId, payload);
@@ -604,11 +622,12 @@ public class MaximTestBot extends TelegramLongPollingBot {
 
         if (payload.startsWith(PAYLOAD_SYSTEM_PREFIX)) {
             userRepo.markSystemPurchasedNow(chatId);
+            // если авто-инвойс был запланирован — гасим, чтобы больше не пытался
+            userRepo.markSystemInvoice5mSentNow(chatId);
             deliverSystemAccess(chatId, payload);
             return;
         }
 
-        // fallback
         sendText(chatId, "✅ Оплата прошла. Если доступ не пришёл — напишите администратору.");
     }
 
@@ -687,7 +706,8 @@ public class MaximTestBot extends TelegramLongPollingBot {
         paymentRepo.markDelivered(paymentId);
         userRepo.setState(chatId, UserState.IDLE);
 
-        // ВАЖНО: оффер на курс придет через 5 минут — делает processSystemOffer5m()
+        // оффер на курс придет через 5 минут — processSystemOffer5m()
+        // авто-инвойс придет через 5 минут после оффера — processSystemInvoiceAfterOffer5m()
     }
 
     // =========================

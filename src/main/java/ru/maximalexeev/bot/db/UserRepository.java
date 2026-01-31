@@ -33,7 +33,9 @@ public class UserRepository {
 
             Long systemOffer5mSentAt,
             Long followupAudio24hSentAt,
-            Long followupSystem24hSentAt
+            Long followupSystem24hSentAt,
+
+            Long systemInvoice5mSentAt
     ) {}
 
     public record Candidate(long chatId, long ts) {}
@@ -48,9 +50,11 @@ public class UserRepository {
             try (PreparedStatement ps = c.prepareStatement("""
                 INSERT INTO users (chat_id, user_id, username, first_name, last_name, state, question_index, score, last_result, receipt_contact,
                                    upsell_sent_at, quiz_finished_at, audio_purchased_at, system_purchased_at, system_offer_5m_sent_at, followup_audio_24h_sent_at, followup_system_24h_sent_at,
+                                   system_invoice_5m_sent_at,
                                    created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL, NULL,
                         NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                        NULL,
                         ?, ?)
                 ON CONFLICT(chat_id) DO UPDATE SET
                   user_id=excluded.user_id,
@@ -263,6 +267,40 @@ public class UserRepository {
         }
     }
 
+    // ---- новое: отметка, что авто-инвойс (через 5 минут после оффера) уже отправлен / отключен
+    public void markSystemInvoice5mSentNow(long chatId) throws Exception {
+        long now = System.currentTimeMillis();
+        try (Connection c = db.getConnection();
+             PreparedStatement ps = c.prepareStatement("""
+                 UPDATE users
+                 SET system_invoice_5m_sent_at=?, updated_at=?
+                 WHERE chat_id=?
+                 """)) {
+            ps.setLong(1, now);
+            ps.setLong(2, now);
+            ps.setLong(3, chatId);
+            ps.executeUpdate();
+        }
+    }
+
+    // ---- кандидаты: 5 минут после отправки оффера (с URL-кнопкой), если НЕ купили систему и авто-инвойс еще не слали
+    public List<Candidate> listSystemInvoice5mCandidates(long cutoffMs) throws Exception {
+        try (Connection c = db.getConnection();
+             PreparedStatement ps = c.prepareStatement("""
+                 SELECT chat_id, system_offer_5m_sent_at
+                 FROM users
+                 WHERE system_offer_5m_sent_at IS NOT NULL
+                   AND system_invoice_5m_sent_at IS NULL
+                   AND system_purchased_at IS NULL
+                   AND state = ?
+                   AND system_offer_5m_sent_at <= ?
+                 """)) {
+            ps.setString(1, UserState.IDLE.name());
+            ps.setLong(2, cutoffMs);
+            return readCandidates(ps);
+        }
+    }
+
     // ---- кандидаты: 5 минут после аудио, если не купили систему
     public List<Candidate> listSystemOffer5mCandidates(long cutoffMs) throws Exception {
         try (Connection c = db.getConnection();
@@ -380,11 +418,14 @@ public class UserRepository {
         Long followupAudio24hSentAt = getNullableLong(rs, "followup_audio_24h_sent_at");
         Long followupSystem24hSentAt = getNullableLong(rs, "followup_system_24h_sent_at");
 
+        Long systemInvoice5mSentAt = getNullableLong(rs, "system_invoice_5m_sent_at");
+
         return new UserRow(
                 chatId, userId, username, firstName, lastName, state, q, score, lastResult, contact,
                 upsellSentAt, quizFinishedAt,
                 audioPurchasedAt, systemPurchasedAt,
-                systemOffer5mSentAt, followupAudio24hSentAt, followupSystem24hSentAt
+                systemOffer5mSentAt, followupAudio24hSentAt, followupSystem24hSentAt,
+                systemInvoice5mSentAt
         );
     }
 
